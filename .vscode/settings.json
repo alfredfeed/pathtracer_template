@@ -1,0 +1,9 @@
+{
+  "clangd.arguments": [
+    "--background-index",
+    "--clang-tidy",
+    "--header-insertion=iwyu",
+    "--completion-style=detailed"
+  ],
+  "clangd.path": "/usr/bin/clangd"
+}
