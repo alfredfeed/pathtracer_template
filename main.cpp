@@ -95,8 +95,8 @@ public:
 		Vector OC = ray.O - C;
 		double delta = sqr(dot(ray.u, OC)) - (OC.norm2() - sqr(R));
 		if (delta < 0) return false;
-		double t1 = dot(ray.u, OC) - sqrt(delta);
-		double t2 = dot(ray.u, OC) + sqrt(delta);
+		double t1 = -dot(ray.u, OC) - sqrt(delta);
+		double t2 = -dot(ray.u, OC) + sqrt(delta);
 		if (t1 > 0) t = t1;
 		else if (t2 > 0) t = t2;
 		else return false;
@@ -142,7 +142,7 @@ public:
 		double closest_t = INFINITY;
 		Vector closest_P, closest_N;
 		for (int i = 0; i < objects.size(); i++) {
-			if (objects[i]->intersect(ray, P, t, N)) { // we should also save P, N, and t
+			if (objects[i]->intersect(ray, P, t, N)) {
 				if (t < closest_t) {
 					closest_t = t;
 					object_id = i;
@@ -164,17 +164,17 @@ public:
 
 		if (recursion_depth >= max_light_bounce) return Vector(0, 0, 0);
 
-		// TODO (lab 1) : if intersect with ray, use the returned information to compute the color ; otherwise black 
+		// DONE (lab 1) : if intersect with ray, use the returned information to compute the color ; otherwise black 
 		// in lab 1, the color only includes direct lighting with shadows		
 
 		Vector P, N;
 		double t;
 		int object_id;
 		if (intersect(ray, P, t, N, object_id)) {
-			// return white for test
-			return Vector(255, 255, 255);
-			if (objects[object_id]->mirror) {
 
+			if (objects[object_id]->mirror) {
+				Vector r = ray.u - 2 * dot(ray.u, N) * N;
+      			return getColor(Ray(P + 0.001 * N, r), recursion_depth + 1);
 				// return getColor in the reflected direction, with recursion_depth+1 (recursively)
 			} // else
 
@@ -182,6 +182,16 @@ public:
 
 				// return getColor in the refraction direction, with recursion_depth+1 (recursively)
 			} // else
+
+			Vector l = light_position - P;
+			double d2 = l.norm2();
+			l = l / sqrt(d2);
+			Vector P_off = P + 0.001 * N;
+			Vector sP, sN; double st; int sid;
+			if (intersect(Ray(P_off, l), sP, st, sN, sid) && st < sqrt(d2))
+				return Vector(0, 0, 0);
+			double cos_t = std::max(0., dot(N, l));
+			return (light_intensity / (4 * M_PI * d2)) * (objects[object_id]->albedo / M_PI) * cos_t;
 
 			// test if there is a shadow by sending a new ray
 			// if there is no shadow, compute the formula with dot products etc.
@@ -224,19 +234,17 @@ int main() {
 	scene.light_position = Vector(-10,20,40);
 	scene.light_intensity = 3E7;
 	scene.fov = 60 * M_PI / 180.;
-	scene.gamma = 1.0;    // TODO (lab 1) : play with gamma ; typically, gamma = 2.2
+	scene.gamma = 2.2;    // DONE (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.max_light_bounce = 5;
 
 	scene.addObject(&center_sphere);
 
-	/*
 	scene.addObject(&wall_left);
 	scene.addObject(&wall_right);
 	scene.addObject(&wall_front);
 	scene.addObject(&wall_behind);
 	scene.addObject(&ceiling);
 	scene.addObject(&floor);
-	*/
 
 	std::vector<unsigned char> image(W * H * 3, 0);
 
@@ -245,11 +253,11 @@ int main() {
 		for (int j = 0; j < W; j++) {
 			Vector color;
 
-			// TODO (lab 1) : correct ray_direction so that it goes through each pixel (j, i)			
+			// DONE (lab 1) : correct ray_direction so that it goes through each pixel (j, i)			
 			Vector ray_direction(
 				j - W / 2.0 + 0.5,
 				-(i - H / 2.0 + 0.5),
-				W / (2.0 * tan(scene.fov / 2.0))
+				-W / (2.0 * tan(scene.fov / 2.0))
 			);
 			ray_direction.normalize();
 
