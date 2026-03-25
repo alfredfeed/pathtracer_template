@@ -89,8 +89,20 @@ public:
 	// t>=0 the distance between the ray origin and P (i.e., the parameter along the ray)
 	// and the unit normal N
 	bool intersect(const Ray& ray, Vector& P, double &t, Vector& N) const {
-		 // TODO (lab 1) : compute the intersection (just true/false at the begining of lab 1, then P, t and N as well)
-		return false;
+		// DONE (lab 1) : compute the intersection (just true/false at the begining of lab 1, then P, t and N as well)
+		// delta = (dot(u, OC))^2 - (||O-C||^2 - R^2)
+		// t = dot(u, OC) +/- sqrt(delta)
+		Vector OC = ray.O - C;
+		double delta = sqr(dot(ray.u, OC)) - (OC.norm2() - sqr(R));
+		if (delta < 0) return false;
+		double t1 = dot(ray.u, OC) - sqrt(delta);
+		double t2 = dot(ray.u, OC) + sqrt(delta);
+		if (t1 > 0) t = t1;
+		else if (t2 > 0) t = t2;
+		else return false;
+		P = ray.O + t * ray.u;
+		N = (P - C) / R;
+		return true;
 	}
 
 	double R;
@@ -124,10 +136,26 @@ public:
 	// Also returns the index of the object within the std::vector objects in object_id
 	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N, int &object_id) const  {
 
-		// TODO (lab 1): iterate through the objects and check the intersections with all of them, 
+		// DONE (lab 1): iterate through the objects and check the intersections with all of them, 
 		// and keep the closest intersection, i.e., the one if smallest positive value of t
 
-		return false;
+		double closest_t = INFINITY;
+		Vector closest_P, closest_N;
+		for (int i = 0; i < objects.size(); i++) {
+			if (objects[i]->intersect(ray, P, t, N)) { // we should also save P, N, and t
+				if (t < closest_t) {
+					closest_t = t;
+					object_id = i;
+					closest_P = P;
+					closest_N = N;
+				}
+			}
+		}
+		P = closest_P;
+		N = closest_N;
+		t = closest_t;
+		return closest_t != INFINITY;
+		
 	}
 
 
@@ -137,13 +165,14 @@ public:
 		if (recursion_depth >= max_light_bounce) return Vector(0, 0, 0);
 
 		// TODO (lab 1) : if intersect with ray, use the returned information to compute the color ; otherwise black 
-		// in lab 1, the color only includes direct lighting with shadows
+		// in lab 1, the color only includes direct lighting with shadows		
 
 		Vector P, N;
 		double t;
 		int object_id;
 		if (intersect(ray, P, t, N, object_id)) {
-
+			// return white for test
+			return Vector(255, 255, 255);
 			if (objects[object_id]->mirror) {
 
 				// return getColor in the reflected direction, with recursion_depth+1 (recursively)
@@ -191,7 +220,7 @@ int main() {
 	Sphere floor(Vector(0, -1000, 0), 990, Vector(0.6, 0.5, 0.7));
 
 	Scene scene;
-	scene.camera_center = Vector(0, 0, 0);
+	scene.camera_center = Vector(0, 0, 55);
 	scene.light_position = Vector(-10,20,40);
 	scene.light_intensity = 3E7;
 	scene.fov = 60 * M_PI / 180.;
@@ -217,7 +246,13 @@ int main() {
 			Vector color;
 
 			// TODO (lab 1) : correct ray_direction so that it goes through each pixel (j, i)			
-			Vector ray_direction(0., 0., -1);
+			Vector ray_direction(
+				j - W / 2.0 + 0.5,
+				-(i - H / 2.0 + 0.5),
+				W / (2.0 * tan(scene.fov / 2.0))
+			);
+			ray_direction.normalize();
+
 
 			Ray ray(scene.camera_center, ray_direction);
 
