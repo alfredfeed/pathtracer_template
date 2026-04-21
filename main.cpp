@@ -18,6 +18,14 @@ static std::uniform_real_distribution<double> uniform(0, 1);
 
 double sqr(double x) { return x * x; };
 
+void boxMuller(double sigma, double& dx, double& dy) {
+	double r1 = uniform(engine[0]);
+	double r2 = uniform(engine[0]);
+	double r = sigma * sqrt(-2 * log(r1));
+	dx = r * cos(2 * M_PI * r2);
+	dy = r * sin(2 * M_PI * r2);
+}
+
 class Vector {
 public:
 	explicit Vector(double x = 0, double y = 0, double z = 0) {
@@ -54,6 +62,9 @@ Vector operator*(const double a, const Vector& b) {
 Vector operator*(const Vector& a, const double b) {
 	return Vector(a[0]*b, a[1]*b, a[2]*b);
 }
+Vector operator*(const Vector& a, const Vector& b) {
+	return Vector(a[0]*b[0], a[1]*b[1], a[2]*b[2]);
+}
 Vector operator/(const Vector& a, const double b) {
 	return Vector(a[0] / b, a[1] / b, a[2] / b);
 }
@@ -62,6 +73,26 @@ double dot(const Vector& a, const Vector& b) {
 }
 Vector cross(const Vector& a, const Vector& b) {
 	return Vector(a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]);
+}
+
+Vector random_cos(const Vector& N) {
+	double r1 = uniform(engine[0]);
+	double r2 = uniform(engine[0]);
+	double s = sqrt(1 - r2);
+	double x = cos(2 * M_PI * r1) * s;
+	double y = sin(2 * M_PI * r1) * s;
+	double z = sqrt(r2);
+
+	Vector T1;
+	if (std::abs(N[0]) <= std::abs(N[1]) && std::abs(N[0]) <= std::abs(N[2]))
+		T1 = Vector(0, -N[2], N[1]);
+	else if (std::abs(N[1]) <= std::abs(N[0]) && std::abs(N[1]) <= std::abs(N[2]))
+		T1 = Vector(-N[2], 0, N[0]);
+	else
+		T1 = Vector(-N[1], N[0], 0);
+	T1.normalize();
+	Vector T2 = cross(N, T1);
+	return x * T1 + y * T2 + z * N;
 }
 
 class Ray {
@@ -188,17 +219,16 @@ public:
 			double d2 = l.norm2();
 			l = l / sqrt(d2);
 			Vector P_off = P + 0.001 * N;
+			Vector direct(0, 0, 0);
 			Vector sP, sN; double st; int sid;
-			if (intersect(Ray(P_off, l), sP, st, sN, sid) && st < sqrt(d2))
-				return Vector(0, 0, 0);
-			double cos_t = std::max(0., dot(N, l));
-			return (light_intensity / (4 * M_PI * d2)) * (objects[object_id]->albedo / M_PI) * cos_t;
+			if (!(intersect(Ray(P_off, l), sP, st, sN, sid) && st < sqrt(d2))) {
+				double cos_t = std::max(0., dot(N, l));
+				direct = (light_intensity / (4 * M_PI * d2)) * (objects[object_id]->albedo / M_PI) * cos_t;
+			}
 
-			// test if there is a shadow by sending a new ray
-			// if there is no shadow, compute the formula with dot products etc.
-
-
-			// TODO (lab 2) : add indirect lighting component with a recursive call
+			Vector wi = random_cos(N);
+			Vector indirect = objects[object_id]->albedo * getColor(Ray(P_off, wi), recursion_depth + 1);
+			return direct + indirect;
 		}
 
 		
@@ -222,7 +252,9 @@ int main() {
 		engine[i].seed(i);
 	}
 
-	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8));
+	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8)); // central
+	Sphere right_sphere(Vector(20, 0, 0), 10., Vector(0.8, 0.8, 0.8)); // right
+
 	center_sphere.mirror = true;
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
@@ -247,30 +279,40 @@ int main() {
 	scene.addObject(&wall_behind);
 	scene.addObject(&ceiling);
 	scene.addObject(&floor);
+	scene.addObject(&right_sphere);
 
 	std::vector<unsigned char> image(W * H * 3, 0);
+
+	int nb_samples = 512;
+	double aperture = 0.3;
+	double focus_distance = 60.0;
 
 #pragma omp parallel for schedule(dynamic, 1)
 	for (int i = 0; i < H; i++) {
 		for (int j = 0; j < W; j++) {
-			Vector color;
+			Vector color(0, 0, 0);
 
-			// DONE (lab 1) : correct ray_direction so that it goes through each pixel (j, i)			
-			Vector ray_direction(
-				j - W / 2.0 + 0.5,
-				-(i - H / 2.0 + 0.5),
-				-W / (2.0 * tan(scene.fov / 2.0))
-			);
-			ray_direction.normalize();
+			for (int s = 0; s < nb_samples; s++) {
+				double dx, dy;
+				boxMuller(0.5, dx, dy);
+				Vector dir(
+					j - W / 2.0 + 0.5 + dx,
+					-(i - H / 2.0 + 0.5 + dy),
+					-W / (2.0 * tan(scene.fov / 2.0))
+				);
+				dir.normalize();
 
+				double t_focus = focus_distance / std::abs(dir[2]);
+				Vector focusPoint = scene.camera_center + t_focus * dir;
+				double du, dv;
+				boxMuller(aperture, du, dv);
+				Vector origin = scene.camera_center + Vector(du, dv, 0);
+				Vector newDir = focusPoint - origin;
+				newDir.normalize();
 
-			Ray ray(scene.camera_center, ray_direction);
-
-			// TODO (lab 2) : add Monte Carlo / averaging of random ray contributions here
-			// TODO (lab 2) : add antialiasing by altering the ray_direction here
-			// TODO (lab 2) : add depth of field effect by altering the ray origin (and direction) here
-
-			color  = scene.getColor(ray, 0);
+				color = color + scene.getColor(Ray(origin, newDir), 0);
+			}
+			color = color / nb_samples;
 
 			image[(i * W + j) * 3 + 0] = std::min(255., std::max(0., 255. * std::pow(color[0] / 255., 1. / scene.gamma)));
 			image[(i * W + j) * 3 + 1] = std::min(255., std::max(0., 255. * std::pow(color[1] / 255., 1. / scene.gamma)));
