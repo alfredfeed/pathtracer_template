@@ -97,8 +97,9 @@ public:
 		if (delta < 0) return false;
 		double t1 = -dot(ray.u, OC) - sqrt(delta);
 		double t2 = -dot(ray.u, OC) + sqrt(delta);
-		if (t1 > 0) t = t1;
-		else if (t2 > 0) t = t2;
+		double eps = 1.0e-3;
+		if (t1 > eps) t = t1;
+		else if (t2 > eps) t = t2;
 		else return false;
 		P = ray.O + t * ray.u;
 		N = (P - C) / R;
@@ -222,6 +223,7 @@ int main() {
 	}
 
 	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8));
+	center_sphere.mirror = true;
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
 	Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));

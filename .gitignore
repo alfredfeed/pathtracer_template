@@ -2,6 +2,6 @@ build/
 .cache/
 .DS_Store
 *.o
-*.png
+#*.png
 *.bmp
 *.jpg
