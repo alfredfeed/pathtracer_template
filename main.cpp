@@ -173,6 +173,30 @@ public:
 		for (int i = 0; i < vertices.size(); i++) {
 			vertices[i] = vertices[i] * s + t;
 		}
+		computeBoundingBox();
+	}
+
+	void computeBoundingBox() {
+		if (vertices.empty()) { bbox_min = bbox_max = Vector(); return; }
+		bbox_min = bbox_max = vertices[0];
+		for (size_t i = 1; i < vertices.size(); i++) {
+			for (int k = 0; k < 3; k++) {
+				bbox_min[k] = std::min(bbox_min[k], vertices[i][k]);
+				bbox_max[k] = std::max(bbox_max[k], vertices[i][k]);
+			}
+		}
+	}
+
+	bool intersectBBox(const Ray& ray) const {
+		double tx1 = (bbox_min[0] - ray.O[0]) / ray.u[0];
+		double tx2 = (bbox_max[0] - ray.O[0]) / ray.u[0];
+		double ty1 = (bbox_min[1] - ray.O[1]) / ray.u[1];
+		double ty2 = (bbox_max[1] - ray.O[1]) / ray.u[1];
+		double tz1 = (bbox_min[2] - ray.O[2]) / ray.u[2];
+		double tz2 = (bbox_max[2] - ray.O[2]) / ray.u[2];
+		double t_near = std::max({std::min(tx1, tx2), std::min(ty1, ty2), std::min(tz1, tz2)});
+		double t_far  = std::min({std::max(tx1, tx2), std::max(ty1, ty2), std::max(tz1, tz2)});
+		return t_far >= t_near && t_far >= 0;
 	}
 
 	// read an .obj file
@@ -290,18 +314,47 @@ public:
 				}
 			}
 		}
+		computeBoundingBox();
 	}
-	
 
-	// TODO ray-mesh intersection (labs 3 and 4)
+
 	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
-		
-		// lab 3 : for each triangle, compute the ray-triangle intersection with Moller-Trumbore algorithm
-		// lab 3 : once done, speed it up by first checking against the mesh bounding box
 		// lab 4 : recursively apply the bounding-box test from a BVH datastructure
+		if (!intersectBBox(ray)) return false;
 
-
-		return false;
+		double closest_t = INFINITY;
+		bool hit = false;
+		Vector best_N;
+		for (size_t i = 0; i < indices.size(); i++) {
+			const Vector& A = vertices[indices[i].vtx[0]];
+			const Vector& B = vertices[indices[i].vtx[1]];
+			const Vector& C = vertices[indices[i].vtx[2]];
+			Vector e1 = B - A;
+			Vector e2 = C - A;
+			Vector triN = cross(e1, e2);
+			double denom = dot(ray.u, triN);
+			if (std::abs(denom) < 1e-12) continue;
+			Vector AmO = A - ray.O;
+			Vector AmO_x_u = cross(AmO, ray.u);
+			double beta  =  dot(e2, AmO_x_u) / denom;
+			double gamma = -dot(e1, AmO_x_u) / denom;
+			double alpha = 1.0 - beta - gamma;
+			if (alpha < 0 || beta < 0 || gamma < 0) continue;
+			double tt = dot(AmO, triN) / denom;
+			if (tt < 1e-3) continue;
+			if (tt < closest_t) {
+				closest_t = tt;
+				best_N = triN;
+				hit = true;
+			}
+		}
+		if (hit) {
+			t = closest_t;
+			P = ray.O + t * ray.u;
+			best_N.normalize();
+			N = best_N;
+		}
+		return hit;
 	}
 
 
@@ -310,6 +363,7 @@ public:
 	std::vector<Vector> normals;
 	std::vector<Vector> uvs;
 	std::vector<Vector> vertexcolors;
+	Vector bbox_min, bbox_max;
 };
 
 
@@ -411,10 +465,10 @@ int main() {
 		engine[i].seed(i);
 	}
 
-	Sphere center_sphere(Vector(0, 0, 0), 10., Vector(0.8, 0.8, 0.8)); // central
-	Sphere right_sphere(Vector(20, 0, 0), 10., Vector(0.8, 0.8, 0.8)); // right
+	TriangleMesh cat(Vector(0.3, 0.3, 0.3));
+	cat.readOBJ("cat.obj");
+	cat.scale_translate(0.3, Vector(0, -10, 0));
 
-	center_sphere.mirror = true;
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
 	Sphere wall_front(Vector(0, 0, -1000), 940, Vector(0.1, 0.6, 0.7));
@@ -430,15 +484,13 @@ int main() {
 	scene.gamma = 2.2;    // DONE (lab 1) : play with gamma ; typically, gamma = 2.2
 	scene.max_light_bounce = 5;
 
-	scene.addObject(&center_sphere);
-
+	scene.addObject(&cat);
 	scene.addObject(&wall_left);
 	scene.addObject(&wall_right);
 	scene.addObject(&wall_front);
 	scene.addObject(&wall_behind);
 	scene.addObject(&ceiling);
 	scene.addObject(&floor);
-	scene.addObject(&right_sphere);
 
 	std::vector<unsigned char> image(W * H * 3, 0);
 
