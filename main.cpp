@@ -110,7 +110,7 @@ class Object {
 public:
 	Object(const Vector& albedo, bool mirror = false, bool transparent = false) : albedo(albedo), mirror(mirror), transparent(transparent) {};
 
-	virtual bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const = 0;
+	virtual bool intersect(const Ray& ray, Vector& P, double& t, Vector& N, Vector& outAlbedo) const = 0;
 
 	Vector albedo;
 	bool mirror, transparent;
@@ -124,7 +124,7 @@ public:
 	// if there is an intersection, also computes the point of intersection P, 
 	// t>=0 the distance between the ray origin and P (i.e., the parameter along the ray)
 	// and the unit normal N
-	bool intersect(const Ray& ray, Vector& P, double &t, Vector& N) const {
+	bool intersect(const Ray& ray, Vector& P, double &t, Vector& N, Vector& outAlbedo) const {
 		// DONE (lab 1) : compute the intersection (just true/false at the begining of lab 1, then P, t and N as well)
 		// delta = (dot(u, OC))^2 - (||O-C||^2 - R^2)
 		// t = dot(u, OC) +/- sqrt(delta)
@@ -139,6 +139,7 @@ public:
 		else return false;
 		P = ray.O + t * ray.u;
 		N = (P - C) / R;
+		outAlbedo = albedo;
 		return true;
 	}
 
@@ -187,7 +188,15 @@ public:
 class TriangleMesh : public Object {
 public:
 	TriangleMesh(const Vector& albedo, bool mirror = false, bool transparent = false) : ::Object(albedo, mirror, transparent) {};
-	~TriangleMesh() { delete root; }
+	~TriangleMesh() {
+		delete root;
+		if (texture) stbi_image_free(texture);
+	}
+
+	void loadTexture(const char* path) {
+		if (texture) { stbi_image_free(texture); texture = nullptr; }
+		texture = stbi_load(path, &tex_w, &tex_h, &tex_c, 3);
+	}
 
 	// first scale and then translate the current object
 	void scale_translate(double s, const Vector& t) {
@@ -366,7 +375,7 @@ public:
 		return node;
 	}
 
-	void intersectNode(const BVHNode* node, const Ray& ray, double& closest_t, Vector& best_N, bool& hit) const {
+	void intersectNode(const BVHNode* node, const Ray& ray, double& closest_t, int& best_tri, double& best_alpha, double& best_beta, double& best_gamma, bool& hit) const {
 		if (!node || !node->intersectBBox(ray)) return;
 		if (!node->left && !node->right) {
 			for (int i = node->start; i < node->end; i++) {
@@ -388,29 +397,56 @@ public:
 				if (tt < 1e-3) continue;
 				if (tt < closest_t) {
 					closest_t = tt;
-					best_N = triN;
+					best_tri = i;
+					best_alpha = alpha;
+					best_beta = beta;
+					best_gamma = gamma;
 					hit = true;
 				}
 			}
 		} else {
-			intersectNode(node->left, ray, closest_t, best_N, hit);
-			intersectNode(node->right, ray, closest_t, best_N, hit);
+			intersectNode(node->left, ray, closest_t, best_tri, best_alpha, best_beta, best_gamma, hit);
+			intersectNode(node->right, ray, closest_t, best_tri, best_alpha, best_beta, best_gamma, hit);
 		}
 	}
 
-	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
+	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N, Vector& outAlbedo) const {
 		if (!root) return false;
 		double closest_t = INFINITY;
-		Vector best_N;
+		int best_tri = -1;
+		double best_alpha = 0, best_beta = 0, best_gamma = 0;
 		bool hit = false;
-		intersectNode(root, ray, closest_t, best_N, hit);
-		if (hit) {
-			t = closest_t;
-			P = ray.O + t * ray.u;
-			best_N.normalize();
-			N = best_N;
+		intersectNode(root, ray, closest_t, best_tri, best_alpha, best_beta, best_gamma, hit);
+		if (!hit) return false;
+
+		t = closest_t;
+		P = ray.O + t * ray.u;
+
+		const TriangleIndices& tri = indices[best_tri];
+
+		if (!normals.empty() && tri.n[0] >= 0 && tri.n[1] >= 0 && tri.n[2] >= 0) {
+			N = best_alpha * normals[tri.n[0]] + best_beta * normals[tri.n[1]] + best_gamma * normals[tri.n[2]];
+			N.normalize();
+		} else {
+			const Vector& A = vertices[tri.vtx[0]];
+			const Vector& B = vertices[tri.vtx[1]];
+			const Vector& C = vertices[tri.vtx[2]];
+			N = cross(B - A, C - A);
+			N.normalize();
 		}
-		return hit;
+
+		if (texture && !uvs.empty() && tri.uv[0] >= 0 && tri.uv[1] >= 0 && tri.uv[2] >= 0) {
+			Vector uv = best_alpha * uvs[tri.uv[0]] + best_beta * uvs[tri.uv[1]] + best_gamma * uvs[tri.uv[2]];
+			double u = uv[0] - std::floor(uv[0]);
+			double v = uv[1] - std::floor(uv[1]);
+			int x = std::min(tex_w - 1, std::max(0, (int)(u * tex_w)));
+			int y = std::min(tex_h - 1, std::max(0, (int)((1.0 - v) * tex_h)));
+			int idx = (y * tex_w + x) * 3;
+			outAlbedo = Vector(texture[idx] / 255.0, texture[idx + 1] / 255.0, texture[idx + 2] / 255.0);
+		} else {
+			outAlbedo = albedo;
+		}
+		return true;
 	}
 
 
@@ -420,6 +456,9 @@ public:
 	std::vector<Vector> uvs;
 	std::vector<Vector> vertexcolors;
 	BVHNode* root = nullptr;
+
+	unsigned char* texture = nullptr;
+	int tex_w = 0, tex_h = 0, tex_c = 0;
 };
 
 
@@ -435,25 +474,28 @@ public:
     // t>=0 the distance between the ray origin and P (i.e., the parameter along the ray)
     // and the unit normal N. 
 	// Also returns the index of the object within the std::vector objects in object_id
-	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N, int &object_id) const  {
+	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N, Vector& outAlbedo, int &object_id) const  {
 
 		// DONE (lab 1): iterate through the objects and check the intersections with all of them, 
 		// and keep the closest intersection, i.e., the one if smallest positive value of t
 
 		double closest_t = INFINITY;
-		Vector closest_P, closest_N;
+		Vector closest_P, closest_N, closest_albedo;
 		for (int i = 0; i < objects.size(); i++) {
-			if (objects[i]->intersect(ray, P, t, N)) {
+			Vector tmpAlbedo;
+			if (objects[i]->intersect(ray, P, t, N, tmpAlbedo)) {
 				if (t < closest_t) {
 					closest_t = t;
 					object_id = i;
 					closest_P = P;
 					closest_N = N;
+					closest_albedo = tmpAlbedo;
 				}
 			}
 		}
 		P = closest_P;
 		N = closest_N;
+		outAlbedo = closest_albedo;
 		t = closest_t;
 		return closest_t != INFINITY;
 		
@@ -468,10 +510,10 @@ public:
 		// DONE (lab 1) : if intersect with ray, use the returned information to compute the color ; otherwise black 
 		// in lab 1, the color only includes direct lighting with shadows		
 
-		Vector P, N;
+		Vector P, N, albedo;
 		double t;
 		int object_id;
-		if (intersect(ray, P, t, N, object_id)) {
+		if (intersect(ray, P, t, N, albedo, object_id)) {
 
 			if (objects[object_id]->mirror) {
 				Vector r = ray.u - 2 * dot(ray.u, N) * N;
@@ -489,14 +531,14 @@ public:
 			l = l / sqrt(d2);
 			Vector P_off = P + 0.001 * N;
 			Vector direct(0, 0, 0);
-			Vector sP, sN; double st; int sid;
-			if (!(intersect(Ray(P_off, l), sP, st, sN, sid) && st < sqrt(d2))) {
+			Vector sP, sN, sAlbedo; double st; int sid;
+			if (!(intersect(Ray(P_off, l), sP, st, sN, sAlbedo, sid) && st < sqrt(d2))) {
 				double cos_t = std::max(0., dot(N, l));
-				direct = (light_intensity / (4 * M_PI * d2)) * (objects[object_id]->albedo / M_PI) * cos_t;
+				direct = (light_intensity / (4 * M_PI * d2)) * (albedo / M_PI) * cos_t;
 			}
 
 			Vector wi = random_cos(N);
-			Vector indirect = objects[object_id]->albedo * getColor(Ray(P_off, wi), recursion_depth + 1);
+			Vector indirect = albedo * getColor(Ray(P_off, wi), recursion_depth + 1);
 			return direct + indirect;
 		}
 
@@ -523,7 +565,8 @@ int main() {
 
 	TriangleMesh cat(Vector(0.3, 0.3, 0.3));
 	cat.readOBJ("cat.obj");
-	cat.scale_translate(0.3, Vector(0, -10, 0));
+	cat.loadTexture("cat_diff.png");
+	cat.scale_translate(0.6, Vector(0, -10, 0));
 
 	Sphere wall_left(Vector(-1000, 0, 0), 940, Vector(0.5, 0.8, 0.1));
 	Sphere wall_right(Vector(1000, 0, 0), 940, Vector(0.9, 0.2, 0.3));
@@ -550,7 +593,7 @@ int main() {
 
 	std::vector<unsigned char> image(W * H * 3, 0);
 
-	int nb_samples = 2048;
+	int nb_samples = 512;
 	double aperture = 0.3;
 	double focus_distance = 60.0;
 
