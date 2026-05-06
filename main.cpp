@@ -2,7 +2,7 @@
 #include <vector>
 #include <cmath>
 #include <random>
-// #include <omp.h>
+#include <omp.h>
 #include <map>
 #include <string>
 #include <fstream>
@@ -24,8 +24,8 @@ static std::uniform_real_distribution<double> uniform(0, 1);
 double sqr(double x) { return x * x; };
 
 void boxMuller(double sigma, double& dx, double& dy) {
-	double r1 = uniform(engine[0]);
-	double r2 = uniform(engine[0]);
+	double r1 = uniform(engine[omp_get_thread_num()]);
+	double r2 = uniform(engine[omp_get_thread_num()]);
 	double r = sigma * sqrt(-2 * log(r1));
 	dx = r * cos(2 * M_PI * r2);
 	dy = r * sin(2 * M_PI * r2);
@@ -81,8 +81,8 @@ Vector cross(const Vector& a, const Vector& b) {
 }
 
 Vector random_cos(const Vector& N) {
-	double r1 = uniform(engine[0]);
-	double r2 = uniform(engine[0]);
+	double r1 = uniform(engine[omp_get_thread_num()]);
+	double r2 = uniform(engine[omp_get_thread_num()]);
 	double s = sqrt(1 - r2);
 	double x = cos(2 * M_PI * r1) * s;
 	double y = sin(2 * M_PI * r1) * s;
@@ -164,28 +164,12 @@ public:
 
 // Class only used in labs 3 and 4 
 
-class TriangleMesh : public Object {
+class BVHNode {
 public:
-	TriangleMesh(const Vector& albedo, bool mirror = false, bool transparent = false) : ::Object(albedo, mirror, transparent) {};
-
-	// first scale and then translate the current object
-	void scale_translate(double s, const Vector& t) {
-		for (int i = 0; i < vertices.size(); i++) {
-			vertices[i] = vertices[i] * s + t;
-		}
-		computeBoundingBox();
-	}
-
-	void computeBoundingBox() {
-		if (vertices.empty()) { bbox_min = bbox_max = Vector(); return; }
-		bbox_min = bbox_max = vertices[0];
-		for (size_t i = 1; i < vertices.size(); i++) {
-			for (int k = 0; k < 3; k++) {
-				bbox_min[k] = std::min(bbox_min[k], vertices[i][k]);
-				bbox_max[k] = std::max(bbox_max[k], vertices[i][k]);
-			}
-		}
-	}
+	Vector bbox_min, bbox_max;
+	BVHNode *left = nullptr, *right = nullptr;
+	int start = 0, end = 0;
+	~BVHNode() { delete left; delete right; }
 
 	bool intersectBBox(const Ray& ray) const {
 		double tx1 = (bbox_min[0] - ray.O[0]) / ray.u[0];
@@ -197,6 +181,20 @@ public:
 		double t_near = std::max({std::min(tx1, tx2), std::min(ty1, ty2), std::min(tz1, tz2)});
 		double t_far  = std::min({std::max(tx1, tx2), std::max(ty1, ty2), std::max(tz1, tz2)});
 		return t_far >= t_near && t_far >= 0;
+	}
+};
+
+class TriangleMesh : public Object {
+public:
+	TriangleMesh(const Vector& albedo, bool mirror = false, bool transparent = false) : ::Object(albedo, mirror, transparent) {};
+	~TriangleMesh() { delete root; }
+
+	// first scale and then translate the current object
+	void scale_translate(double s, const Vector& t) {
+		for (int i = 0; i < vertices.size(); i++) {
+			vertices[i] = vertices[i] * s + t;
+		}
+		buildBVH();
 	}
 
 	// read an .obj file
@@ -314,40 +312,98 @@ public:
 				}
 			}
 		}
-		computeBoundingBox();
+		buildBVH();
 	}
 
 
-	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
-		// lab 4 : recursively apply the bounding-box test from a BVH datastructure
-		if (!intersectBBox(ray)) return false;
+	void buildBVH() {
+		delete root;
+		root = buildBVHRecursive(0, (int)indices.size());
+	}
 
-		double closest_t = INFINITY;
-		bool hit = false;
-		Vector best_N;
-		for (size_t i = 0; i < indices.size(); i++) {
-			const Vector& A = vertices[indices[i].vtx[0]];
-			const Vector& B = vertices[indices[i].vtx[1]];
-			const Vector& C = vertices[indices[i].vtx[2]];
-			Vector e1 = B - A;
-			Vector e2 = C - A;
-			Vector triN = cross(e1, e2);
-			double denom = dot(ray.u, triN);
-			if (std::abs(denom) < 1e-12) continue;
-			Vector AmO = A - ray.O;
-			Vector AmO_x_u = cross(AmO, ray.u);
-			double beta  =  dot(e2, AmO_x_u) / denom;
-			double gamma = -dot(e1, AmO_x_u) / denom;
-			double alpha = 1.0 - beta - gamma;
-			if (alpha < 0 || beta < 0 || gamma < 0) continue;
-			double tt = dot(AmO, triN) / denom;
-			if (tt < 1e-3) continue;
-			if (tt < closest_t) {
-				closest_t = tt;
-				best_N = triN;
-				hit = true;
+	BVHNode* buildBVHRecursive(int start, int end) {
+		BVHNode* node = new BVHNode();
+		node->start = start;
+		node->end = end;
+
+		// bounding
+		if (start < end) {
+			node->bbox_min = node->bbox_max = vertices[indices[start].vtx[0]];
+			for (int i = start; i < end; i++) {
+				for (int j = 0; j < 3; j++) {
+					const Vector& v = vertices[indices[i].vtx[j]];
+					for (int k = 0; k < 3; k++) {
+						node->bbox_min[k] = std::min(node->bbox_min[k], v[k]);
+						node->bbox_max[k] = std::max(node->bbox_max[k], v[k]);
+					}
+				}
 			}
 		}
+
+		const int leaf_threshold = 5;
+		if (end - start <= leaf_threshold) return node;
+
+		Vector diag = node->bbox_max - node->bbox_min;
+		int axis = 0;
+		if (diag[1] > diag[axis]) axis = 1;
+		if (diag[2] > diag[axis]) axis = 2;
+		double mid = (node->bbox_min[axis] + node->bbox_max[axis]) / 2.0;
+
+		int pivot = start;
+		for (int i = start; i < end; i++) {
+			const TriangleIndices& tri = indices[i];
+			double c = (vertices[tri.vtx[0]][axis] + vertices[tri.vtx[1]][axis] + vertices[tri.vtx[2]][axis]) / 3.0;
+			if (c < mid) {
+				std::swap(indices[i], indices[pivot]);
+				pivot++;
+			}
+		}
+
+		if (pivot == start || pivot == end) return node;
+
+		node->left = buildBVHRecursive(start, pivot);
+		node->right = buildBVHRecursive(pivot, end);
+		return node;
+	}
+
+	void intersectNode(const BVHNode* node, const Ray& ray, double& closest_t, Vector& best_N, bool& hit) const {
+		if (!node || !node->intersectBBox(ray)) return;
+		if (!node->left && !node->right) {
+			for (int i = node->start; i < node->end; i++) {
+				const Vector& A = vertices[indices[i].vtx[0]];
+				const Vector& B = vertices[indices[i].vtx[1]];
+				const Vector& C = vertices[indices[i].vtx[2]];
+				Vector e1 = B - A;
+				Vector e2 = C - A;
+				Vector triN = cross(e1, e2);
+				double denom = dot(ray.u, triN);
+				if (std::abs(denom) < 1e-12) continue;
+				Vector AmO = A - ray.O;
+				Vector AmO_x_u = cross(AmO, ray.u);
+				double beta  =  dot(e2, AmO_x_u) / denom;
+				double gamma = -dot(e1, AmO_x_u) / denom;
+				double alpha = 1.0 - beta - gamma;
+				if (alpha < 0 || beta < 0 || gamma < 0) continue;
+				double tt = dot(AmO, triN) / denom;
+				if (tt < 1e-3) continue;
+				if (tt < closest_t) {
+					closest_t = tt;
+					best_N = triN;
+					hit = true;
+				}
+			}
+		} else {
+			intersectNode(node->left, ray, closest_t, best_N, hit);
+			intersectNode(node->right, ray, closest_t, best_N, hit);
+		}
+	}
+
+	bool intersect(const Ray& ray, Vector& P, double& t, Vector& N) const {
+		if (!root) return false;
+		double closest_t = INFINITY;
+		Vector best_N;
+		bool hit = false;
+		intersectNode(root, ray, closest_t, best_N, hit);
 		if (hit) {
 			t = closest_t;
 			P = ray.O + t * ray.u;
@@ -363,7 +419,7 @@ public:
 	std::vector<Vector> normals;
 	std::vector<Vector> uvs;
 	std::vector<Vector> vertexcolors;
-	Vector bbox_min, bbox_max;
+	BVHNode* root = nullptr;
 };
 
 
@@ -494,7 +550,7 @@ int main() {
 
 	std::vector<unsigned char> image(W * H * 3, 0);
 
-	int nb_samples = 512;
+	int nb_samples = 2048;
 	double aperture = 0.3;
 	double focus_distance = 60.0;
 
