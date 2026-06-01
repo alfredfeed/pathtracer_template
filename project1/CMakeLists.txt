@@ -7,6 +7,8 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
 add_executable(main main.cpp)
 
+target_include_directories(main PRIVATE ${CMAKE_CURRENT_SOURCE_DIR}/..)
+
 target_compile_options(main PRIVATE -Wno-deprecated-declarations)
 
 if(APPLE)
