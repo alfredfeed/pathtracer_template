@@ -4,6 +4,7 @@
 #include <sstream>
 
 #include <vector>
+#include <random>
 
 #define STB_IMAGE_WRITE_IMPLEMENTATION
 #include "stb_image_write.h"
@@ -215,12 +216,29 @@ public:
 
     void compute() {
 
-        // TODO Lab 1 (Voronoi)
+        // DONE Lab 1 (Voronoi)
         // For all sites Pi (in parallel) :
         //      Start with a unit square
         //      For all other sites Pj (optionally, only k nearest neighbors) :
         //          Clip it with bisector of [Pi,Pj]
         //      (Lab 3, fluids) : also clip it by a disk of radius sqrt(w_i - w_air) centered at Pi
+        Polygon square;
+        square.vertices.push_back(Vector(0, 0));
+        square.vertices.push_back(Vector(1, 0));
+        square.vertices.push_back(Vector(1, 1));
+        square.vertices.push_back(Vector(0, 1));
+
+        cells.resize(points.size());
+
+#pragma omp parallel for schedule(dynamic)
+        for (int i = 0; i < (int)points.size(); i++) {
+            Polygon cell = square;
+            for (int j = 0; j < (int)points.size(); j++) {
+                if (i == j) continue;
+                cell = clip_by_bisector(cell, points[i], points[j], 0, 0);
+            }
+            cells[i] = cell;
+        }
     }
 
 
@@ -237,12 +255,34 @@ public:
 
     static Polygon clip_by_bisector(const Polygon& V, const Vector& P0, const Vector& Pi, double w0, double wi) {
 
-        // TODO Lab 1 (Voronoi) : in Lab 1, we assume w0 = w1 = 0
+        // DONE Lab 1 (Voronoi) : in Lab 1, we assume w0 = w1 = 0
         // Clip a polygon by the bisector of the segment defined by P0 (the current site of the Voronoi cell being computed) and Pi (another site)
         
         // TODO Lab 2 (Semi-Discrete Optimal Transport) : extend to Laguerre cells, i.e., w0 != w1
 
+        Vector M = (P0 + Pi) * 0.5;
+        Vector dir = Pi - P0;
+
         Polygon result;
+        int n = (int)V.vertices.size();
+        for (int i = 0; i < n; i++) {
+            const Vector& B = V.vertices[i];
+            const Vector& A = V.vertices[(i > 0) ? (i - 1) : (n - 1)];
+
+            bool B_inside = dot(B - M, dir) < 0;
+            bool A_inside = dot(A - M, dir) < 0;
+
+            if (B_inside) {
+                if (!A_inside) {
+                    double t = dot(M - A, dir) / dot(B - A, dir);
+                    result.vertices.push_back(A + t * (B - A));
+                }
+                result.vertices.push_back(B);
+            } else if (A_inside) {
+                double t = dot(M - A, dir) / dot(B - A, dir);
+                result.vertices.push_back(A + t * (B - A));
+            }
+        }
 
         return result;
     }
@@ -373,16 +413,21 @@ public:
 
 int main() {
 
-    Polygon p;
-    p.vertices.push_back(Vector(0.1, 0.2));
-    p.vertices.push_back(Vector(0.6, 0.4));
-    p.vertices.push_back(Vector(0.5, 0.7));
-    p.vertices.push_back(Vector(0.2, 0.5));
+    int N = 1000;
 
-    std::vector<Polygon> s;
-    s.push_back(p);
+    VoronoiDiagram vor;
+    vor.points.resize(N);
 
-    save_frame(s, "toto");
-    save_svg(s, "toto.svg");
+    std::default_random_engine engine(42);
+    std::uniform_real_distribution<double> uniform(0.0, 1.0);
+    for (int i = 0; i < N; i++) {
+        vor.points[i] = Vector(uniform(engine), uniform(engine));
+    }
+
+    vor.compute();
+
+    save_svg(vor.cells, "voronoi.svg", &vor.points);
+    save_frame(vor.cells, "voronoi");
+
     return 0;
 }
