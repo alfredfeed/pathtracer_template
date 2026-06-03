@@ -60,9 +60,16 @@ public:
 
     double area() {
         if (vertices.size() < 3) return 0;
-        // TODO Lab 2
+        // DONE Lab 2
         // Compute the area of the polygon
-        return -111;
+        double a = 0;
+        int n = (int)vertices.size();
+        for (int i = 0; i < n; i++) {
+            const Vector& A = vertices[i];
+            const Vector& B = vertices[(i + 1) % n];
+            a += A[0] * B[1] - B[0] * A[1];
+        }
+        return std::abs(a) * 0.5;
     }
 
     Vector centroid() {
@@ -76,10 +83,22 @@ public:
     double integral_square_distance(const Vector& Pi) {
         if (vertices.size() < 3) return 0;
 
-        // TODO Lab 2
+        // DONE Lab 2
         // Compute the integral of ||x-Pi||^2 over the polygon
 
-        return -111;
+        double total = 0;
+        int n = (int)vertices.size();
+        for (int j = 1; j < n - 1; j++) {
+            Vector c[3] = { vertices[0], vertices[j], vertices[j + 1] };
+            double areaT = 0.5 * std::abs((c[1][0] - c[0][0]) * (c[2][1] - c[0][1])
+                                        - (c[1][1] - c[0][1]) * (c[2][0] - c[0][0]));
+            double sum = 0;
+            for (int k = 0; k < 3; k++)
+                for (int l = k; l < 3; l++)
+                    sum += dot(c[k] - Pi, c[l] - Pi);
+            total += areaT / 6.0 * sum;
+        }
+        return total;
     }
 
     std::vector<Vector> vertices;
@@ -233,9 +252,11 @@ public:
 #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < (int)points.size(); i++) {
             Polygon cell = square;
+            double wi = weights.empty() ? 0.0 : weights[i];
             for (int j = 0; j < (int)points.size(); j++) {
                 if (i == j) continue;
-                cell = clip_by_bisector(cell, points[i], points[j], 0, 0);
+                double wj = weights.empty() ? 0.0 : weights[j];
+                cell = clip_by_bisector(cell, points[i], points[j], wi, wj);
             }
             cells[i] = cell;
         }
@@ -258,10 +279,10 @@ public:
         // DONE Lab 1 (Voronoi) : in Lab 1, we assume w0 = w1 = 0
         // Clip a polygon by the bisector of the segment defined by P0 (the current site of the Voronoi cell being computed) and Pi (another site)
         
-        // TODO Lab 2 (Semi-Discrete Optimal Transport) : extend to Laguerre cells, i.e., w0 != w1
+        // DONE Lab 2 (Semi-Discrete Optimal Transport) : extend to Laguerre cells, i.e., w0 != w1
 
-        Vector M = (P0 + Pi) * 0.5;
         Vector dir = Pi - P0;
+        Vector M = (P0 + Pi) * 0.5 + ((w0 - wi) / (2.0 * dir.norm2())) * dir;
 
         Polygon result;
         int n = (int)V.vertices.size();
@@ -327,10 +348,15 @@ static lbfgsfloatval_t evaluate(
    
     // Lab 2 (Optimal transport) : compute the function to be minimized (fx) and its gradient (g[i], i=0..n-1)
     // Lab 3 (fluid) : adapt these functions to support partial optimal transport (now "n" has been increased by 1 to account for the air variable)
-    
+
     lbfgsfloatval_t fx = 0.0;
-    // g[i] = ...
-    // fx = ...
+    double lambda = 1.0 / n;
+    for (int i = 0; i < n; i++) {
+        double A_i = ot->vor.cells[i].area();
+        double I_i = ot->vor.cells[i].integral_square_distance(ot->vor.points[i]);
+        fx += -I_i + x[i] * A_i - lambda * x[i];
+        g[i] = A_i - lambda;
+    }
 
     return fx;
 }
@@ -415,19 +441,20 @@ int main() {
 
     int N = 1000;
 
-    VoronoiDiagram vor;
-    vor.points.resize(N);
+    OptimalTransport ot;
+    ot.vor.points.resize(N);
+    ot.vor.weights.resize(N, 0.0);
 
     std::default_random_engine engine(42);
     std::uniform_real_distribution<double> uniform(0.0, 1.0);
     for (int i = 0; i < N; i++) {
-        vor.points[i] = Vector(uniform(engine), uniform(engine));
+        ot.vor.points[i] = Vector(uniform(engine), uniform(engine));
     }
 
-    vor.compute();
+    ot.optimize();
 
-    save_svg(vor.cells, "voronoi.svg", &vor.points);
-    save_frame(vor.cells, "voronoi");
+    save_svg(ot.vor.cells, "ot.svg", &ot.vor.points);
+    save_frame(ot.vor.cells, "ot");
 
     return 0;
 }
