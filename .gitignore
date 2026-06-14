@@ -6,3 +6,7 @@ build/
 *.bmp
 *.jpg
 project2/main
+project2/main_bench
+*.log
+fluid_original/
+fluid_viscosity_restitution/

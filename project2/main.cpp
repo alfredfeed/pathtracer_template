@@ -11,6 +11,10 @@
 
 #include "lbfgs.h"
 
+#ifndef M_PI
+#define M_PI 3.14159265358979323846
+#endif
+
 double sqr(double x) { return x * x; };
 
 class Vector {
@@ -74,10 +78,21 @@ public:
 
     Vector centroid() {
         if (vertices.size() < 3) return Vector(0, 0);
-        // TODO Lab 3
+        // DONE Lab 3
         // Compute the centroid of the polygon
-
-        return Vector(-111,-111);
+        double cx = 0, cy = 0, a = 0;
+        int n = (int)vertices.size();
+        for (int i = 0; i < n; i++) {
+            const Vector& A = vertices[i];
+            const Vector& B = vertices[(i + 1) % n];
+            double cross = A[0] * B[1] - B[0] * A[1];
+            cx += (A[0] + B[0]) * cross;
+            cy += (A[1] + B[1]) * cross;
+            a += cross;
+        }
+        a *= 0.5;
+        if (std::abs(a) < 1e-12) return vertices[0];
+        return Vector(cx / (6 * a), cy / (6 * a));
     }
 
     double integral_square_distance(const Vector& Pi) {
@@ -249,6 +264,9 @@ public:
 
         cells.resize(points.size());
 
+        bool has_air = (weights.size() == points.size() + 1);
+        double w_air = has_air ? weights.back() : 0.0;
+
 #pragma omp parallel for schedule(dynamic)
         for (int i = 0; i < (int)points.size(); i++) {
             Polygon cell = square;
@@ -258,6 +276,25 @@ public:
                 double wj = weights.empty() ? 0.0 : weights[j];
                 cell = clip_by_bisector(cell, points[i], points[j], wi, wj);
             }
+
+            if (has_air) {
+                double R2 = wi - w_air;
+                if (R2 <= 0) {
+                    // edgecase
+                    cell.vertices.clear();
+                } else {
+                    double R = sqrt(R2);
+                    const int K = 50;
+                    for (int k = 0; k < K; k++) {
+                        double a0 = 2.0 * M_PI * k / K;
+                        double a1 = 2.0 * M_PI * (k + 1) / K;
+                        Vector edge_u = points[i] + Vector(R * cos(a0), R * sin(a0));
+                        Vector edge_v = points[i] + Vector(R * cos(a1), R * sin(a1));
+                        cell = clip_by_edge(cell, edge_u, edge_v);
+                    }
+                }
+            }
+
             cells[i] = cell;
         }
     }
@@ -265,11 +302,33 @@ public:
 
     static Polygon clip_by_edge(const Polygon& V, const Vector& u, const Vector& v) {
 
-        // TODO Lab 3 (fluids)
+        // DONE Lab 3 (fluids)
         // Clip a polygon by an edge defined by vertices u and v
         // Will be used to clip a polygon (a cell) by all the edges of a (discretized) disk
 
+        Vector edge = v - u;
+        Vector N(edge[1], -edge[0]);
+
         Polygon result;
+        int n = (int)V.vertices.size();
+        for (int i = 0; i < n; i++) {
+            const Vector& B = V.vertices[i];
+            const Vector& A = V.vertices[(i > 0) ? (i - 1) : (n - 1)];
+
+            bool B_inside = dot(u - B, N) >= 0;
+            bool A_inside = dot(u - A, N) >= 0;
+
+            if (B_inside) {
+                if (!A_inside) {
+                    double t = dot(u - A, N) / dot(B - A, N);
+                    result.vertices.push_back(A + t * (B - A));
+                }
+                result.vertices.push_back(B);
+            } else if (A_inside) {
+                double t = dot(u - A, N) / dot(B - A, N);
+                result.vertices.push_back(A + t * (B - A));
+            }
+        }
 
         return result;
     }
@@ -327,6 +386,9 @@ public:
     void optimize();
 
     VoronoiDiagram vor;
+
+    bool fluid_mode = false;
+    double fluid_volume = 1.0;
 };
 
 
@@ -350,6 +412,25 @@ static lbfgsfloatval_t evaluate(
     // Lab 3 (fluid) : adapt these functions to support partial optimal transport (now "n" has been increased by 1 to account for the air variable)
 
     lbfgsfloatval_t fx = 0.0;
+
+    if (ot->fluid_mode) {
+        int Nf = n - 1;
+        double vol_air = 1.0 - ot->fluid_volume;
+        double lambda = ot->fluid_volume / Nf;
+        double estimated_fluid = 0.0;
+        for (int i = 0; i < Nf; i++) {
+            double A_i = ot->vor.cells[i].area();
+            double I_i = ot->vor.cells[i].integral_square_distance(ot->vor.points[i]);
+            fx += -I_i + x[i] * A_i - lambda * x[i];
+            g[i] = A_i - lambda;
+            estimated_fluid += A_i;
+        }
+        double estimated_air = 1.0 - estimated_fluid;
+        fx += -x[Nf] * (vol_air - estimated_air);
+        g[Nf] = estimated_air - vol_air;
+        return fx;
+    }
+
     double lambda = 1.0 / n;
     for (int i = 0; i < n; i++) {
         double A_i = ot->vor.cells[i].area();
@@ -366,6 +447,7 @@ static int progress(
     void* instance, const lbfgsfloatval_t* x, const lbfgsfloatval_t* g, const lbfgsfloatval_t fx,
     const lbfgsfloatval_t xnorm, const lbfgsfloatval_t gnorm, const lbfgsfloatval_t step,
     int n, int k, int ls) {
+    if (((OptimalTransport*)instance)->fluid_mode) return 0;
     printf("Iteration %d:\n", k);
     printf("  fx = %f\n", fx);
     printf("  xnorm = %f, gnorm = %f, step = %f\n", xnorm, gnorm, step);
@@ -408,21 +490,74 @@ public:
         Vector g(0, -9.81);
         double m_i = 200;
 
-        // TODO Lab 3 : 
+        // DONE Lab 3 :
         // Compute semi-discrete partial optimal transport
         // for all particles, add gravity and spring force towards cell centroid, integrate acceleration->velocity and velocity->position
+
+        ot.vor.points = particles;
+        double w0 = fluid_volume / (N_particles * M_PI);
+        ot.vor.weights.assign(N_particles + 1, 0.0);
+        for (int i = 0; i < N_particles; i++) ot.vor.weights[i] = w0;
+        ot.optimize();
+
+        // I added this to make energy disappear, because the water was bouncing endlessly
+        double restitution = use_damping ? 0.8 : 1.0;
+        double viscosity = use_damping ? 0.997 : 1.0;
+
+        for (int i = 0; i < N_particles; i++) {
+            Vector C = (ot.vor.cells[i].vertices.size() >= 3) ? ot.vor.cells[i].centroid() : particles[i];
+            Vector F_spring = (1.0 / epsilon2) * (C - particles[i]);
+            Vector F = F_spring + m_i * g;
+            velocities[i] = (velocities[i] + (dt / m_i) * F) * viscosity;
+            particles[i] = particles[i] + dt * velocities[i];
+
+            for (int d = 0; d < 2; d++) {
+                if (particles[i][d] < 0)      { particles[i][d] = -particles[i][d];     velocities[i][d] = -restitution * velocities[i][d]; }
+                else if (particles[i][d] > 1) { particles[i][d] = 2.0 - particles[i][d]; velocities[i][d] = -restitution * velocities[i][d]; }
+            }
+        }
     }
 
     // just run the full simulation
     void run_simulation() {
+
+        fluid_volume = 0.45;
+
+        particles.resize(N_particles);
+        velocities.resize(N_particles, Vector(0, 0));
+
+        std::default_random_engine engine(42);
+        std::uniform_real_distribution<double> jitter(-0.2, 0.2);
+        double L = sqrt(fluid_volume);
+        int nc = (int)ceil(sqrt((double)N_particles));
+        double spacing = L / nc;
+        double x0 = 0.5 - L / 2;
+        double y0 = 0.98 - L;
+        for (int i = 0; i < N_particles; i++) {
+            int r = i / nc, c = i % nc;
+            double x = x0 + (c + 0.5 + jitter(engine)) * spacing;
+            double y = y0 + (r + 0.5 + jitter(engine)) * spacing;
+            particles[i] = Vector(x, y);
+        }
+
+        ot.fluid_mode = true;
+        ot.fluid_volume = fluid_volume;
+        ot.vor.points = particles;
+
+        ot.vor.weights.assign(N_particles + 1, 0.0);
+        double w0 = fluid_volume / (N_particles * M_PI);
+        for (int i = 0; i < N_particles; i++) ot.vor.weights[i] = w0;
+
         double dt = 0.002;
-        for (int i = 0; i < 1000; i++) {
+        for (int i = 0; i < 2000; i++) {
             time_step(dt);
-            save_frame(ot.vor.cells, "test", i);
+            save_frame(ot.vor.cells, "fluid", i);
+            printf("frame %d done\n", i);
         }
     }
 
     int N_particles;
+    bool use_damping = false; // set false for the original elastic fluid
 
     OptimalTransport ot;
     std::vector<Vector> particles;  // the position of all particles
@@ -439,22 +574,8 @@ public:
 
 int main() {
 
-    int N = 1000;
-
-    OptimalTransport ot;
-    ot.vor.points.resize(N);
-    ot.vor.weights.resize(N, 0.0);
-
-    std::default_random_engine engine(42);
-    std::uniform_real_distribution<double> uniform(0.0, 1.0);
-    for (int i = 0; i < N; i++) {
-        ot.vor.points[i] = Vector(uniform(engine), uniform(engine));
-    }
-
-    ot.optimize();
-
-    save_svg(ot.vor.cells, "ot.svg", &ot.vor.points);
-    save_frame(ot.vor.cells, "ot");
+    Fluid fluid(300);
+    fluid.run_simulation();
 
     return 0;
 }
